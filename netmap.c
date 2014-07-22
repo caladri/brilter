@@ -133,7 +133,7 @@ producer_netmap_produce(struct producer *producer, struct processor *processor, 
 					pfd.fd = nh->nh_d->fd;
 					pfd.events = POLLIN;
 					pfd.revents = 0;
-					rv = poll(&pfd, 1, 0);
+					rv = poll(&pfd, 1, -1);
 					if (rv == -1)
 						err(1, "rx poll");
 					need_sync = false;
