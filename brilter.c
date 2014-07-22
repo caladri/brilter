@@ -101,6 +101,8 @@ brilter_process(struct processor *processor, struct packet *pkts, size_t npkts, 
 	struct packet cpkts[npkts];
 	size_t cnpkts;
 
+	(void)processor;
+
 	assert(processor == &brilter_processor);
 
 	cnpkts = 0;
