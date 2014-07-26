@@ -8,6 +8,7 @@
 
 #include <net/ethernet.h>
 #include <netinet/in.h>
+#include <netinet/ip6.h>
 
 #include "consumer.h"
 #include "netmap.h"
@@ -80,6 +81,7 @@ static bool
 brilter_pass(const uint8_t *data, size_t datalen)
 {
 	struct ether_header eh;
+	struct ip6_hdr ip6;
 
 	if (datalen < sizeof eh)
 		return (false);
@@ -89,10 +91,58 @@ brilter_pass(const uint8_t *data, size_t datalen)
 	datalen -= sizeof eh;
 
 	/*
-	 * XXX
-	 * Too-simple a start; only pass IPv6, but all IPv6.
+	 * We're only interested in passing IPv6 traffic.
 	 */
-	return (ntohs(eh.ether_type) == ETHERTYPE_IPV6);
+	if (ntohs(eh.ether_type) != ETHERTYPE_IPV6)
+		return (false);
+
+	if (datalen < sizeof ip6)
+		return (false);
+
+	memcpy(&ip6, data, sizeof ip6);
+	data += sizeof ip6;
+	datalen -= sizeof ip6;
+
+	if ((ip6.ip6_vfc & IPV6_VERSION_MASK) != IPV6_VERSION)
+		return (false);
+
+	/*
+	 * Only interested in allowing ICMP6 and maybe TCP6.
+	 * XXX
+	 * What about UDP?
+	 */
+	switch (ip6.ip6_nxt) {
+	case IPPROTO_ICMPV6:
+		return (true);
+	case IPPROTO_TCP:
+		break;
+	default:
+		return (false);
+	}
+
+	/*
+	 * Pass any link-local to link-local traffic, i.e. fe80::/112
+	 * to fe80::/112.
+	 */
+	if (ip6.ip6_src.s6_addr[0] == 0xfe && ip6.ip6_src.s6_addr[1] == 0x80 &&
+	    ip6.ip6_dst.s6_addr[0] == 0xfe && ip6.ip6_dst.s6_addr[1] == 0x80)
+		return (true);
+
+	/*
+	 * And anything destined for link-local multicast, i.e. fe?2::/112.
+	 */
+	if (ip6.ip6_dst.s6_addr[0] == 0xfe && (ip6.ip6_dst.s6_addr[1] & 0x0f) == 0x02)
+		return (true);
+
+	/*
+	 * TODO
+	 * Block inbound TCP SYNs except to port 22.
+	 */
+
+	/*
+	 * Pass all remaining TCP traffic.
+	 */
+	return (true);
 }
 
 static void
