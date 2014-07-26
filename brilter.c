@@ -202,21 +202,20 @@ brilter_pass(struct brilter_state *bs, const uint8_t *data, size_t datalen)
 static void
 brilter_process(struct processor *processor, struct packet *pkts, size_t npkts, struct consumer *consumer)
 {
-	struct packet cpkts[npkts];
 	struct brilter_state *bs;
-	size_t cnpkts;
+	size_t cnpkts, n;
 
 	bs = container_of(processor, struct brilter_state, bs_processor);
 
 	cnpkts = 0;
-	while (npkts-- != 0) {
-		if (brilter_pass(bs, pkts[0].p_data, pkts[0].p_datalen))
-			cpkts[cnpkts++] = pkts[0];
-		pkts++;
+	for (n = 0; n < npkts; n++) {
+		if (!brilter_pass(bs, pkts[n].p_data, pkts[n].p_datalen))
+			continue;
+		pkts[cnpkts++] = pkts[n];
 	}
 
 	if (cnpkts != 0)
-		consumer->c_consume(consumer, cpkts, cnpkts);
+		consumer->c_consume(consumer, pkts, cnpkts);
 }
 
 static struct processor *
