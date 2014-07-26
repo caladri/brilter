@@ -12,6 +12,7 @@
 #define	NETMAP_WITH_LIBS
 #include <net/netmap_user.h>
 
+#include "cdefs.h"
 #include "consumer.h"
 #include "netmap.h"
 #include "packet.h"
@@ -56,7 +57,7 @@ consumer_netmap_consume(struct consumer *consumer, struct packet *pkts, size_t n
 	struct netmap_slot *slot;
 	int rv;
 
-	nh = (struct netmap_handle *)((uintptr_t)consumer - offsetof(struct netmap_handle, nh_consumer));
+	nh = container_of(consumer, struct netmap_handle, nh_consumer);
 
 	nh->nh_d->cur_tx_ring = nh->nh_d->first_tx_ring;
 
@@ -118,7 +119,7 @@ producer_netmap_produce(struct producer *producer, struct processor *processor, 
 	size_t npkts;
 	int rv;
 
-	nh = (struct netmap_handle *)((uintptr_t)producer - offsetof(struct netmap_handle, nh_producer));
+	nh = container_of(producer, struct netmap_handle, nh_producer);
 
 	nh->nh_d->cur_rx_ring = nh->nh_d->first_rx_ring;
 
