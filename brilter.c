@@ -31,10 +31,17 @@ main(int argc, char *argv[])
 	struct consumer *consumers[2];
 	struct producer *producers[2];
 	struct pipe *pipes[2];
+	bool daemonize;
 	int ch;
+	int rv;
 
-	while ((ch = getopt(argc, argv, "")) != -1) {
+	daemonize = false;
+
+	while ((ch = getopt(argc, argv, "d")) != -1) {
 		switch (ch) {
+		case 'd':
+			daemonize = true;
+			break;
 		case '?':
 		default:
 			usage();
@@ -45,6 +52,12 @@ main(int argc, char *argv[])
 
 	if (argc != 2)
 		usage();
+
+	if (daemonize) {
+		rv = daemon(0, 0);
+		if (rv == -1)
+			err(1, "daemon");
+	}
 
 	printf("Open consumers: %s", argv[0]);
 	consumers[0] = netmap_consumer(argv[0]);
@@ -169,6 +182,6 @@ brilter_process(struct processor *processor, struct packet *pkts, size_t npkts, 
 static void
 usage(void)
 {
-	fprintf(stderr, "usage: brilter if0 if1\n");
+	fprintf(stderr, "usage: brilter [-d] if0 if1\n");
 	exit(1);
 }
