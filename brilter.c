@@ -1,10 +1,10 @@
+#include <sys/endian.h>
 #include <assert.h>
 #include <err.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <unistd.h>
 
 #include <net/ethernet.h>
@@ -111,45 +111,49 @@ main(int argc, char *argv[])
 static bool
 brilter_pass(struct brilter_state *bs, const uint8_t *data, size_t datalen)
 {
-	struct ether_header eh;
-	struct ip6_hdr ip6;
-	struct tcphdr th;
+	const uint8_t *src, *dst;
+	uint16_t dport, etype;
+	uint8_t nxt, vfc, flags;
 
-	if (datalen < sizeof eh)
+	/* Examine Ethernet header.  */
+	if (datalen < sizeof (struct ether_header))
 		return (false);
-
-	memcpy(&eh, data, sizeof eh);
-	data += sizeof eh;
-	datalen -= sizeof eh;
 
 	/*
 	 * We're only interested in passing IPv6 traffic.
 	 */
-	if (ntohs(eh.ether_type) != ETHERTYPE_IPV6)
+	etype = be16dec(field_ptr(data, struct ether_header, ether_type));
+	if (etype != ETHERTYPE_IPV6)
 		return (false);
 
-	if (datalen < sizeof ip6)
+	/* Skip Ethernet header.  */
+	data += sizeof (struct ether_header);
+	datalen -= sizeof (struct ether_header);
+
+	/* Examine IPv6 header.  */
+	if (datalen < sizeof (struct ip6_hdr))
 		return (false);
 
-	memcpy(&ip6, data, sizeof ip6);
-	data += sizeof ip6;
-	datalen -= sizeof ip6;
-
-	if ((ip6.ip6_vfc & IPV6_VERSION_MASK) != IPV6_VERSION)
+	/*
+	 * Check for correct version.
+	 */
+	vfc = *(const uint8_t *)field_ptr(data, struct ip6_hdr, ip6_vfc);
+	if ((vfc & IPV6_VERSION_MASK) != IPV6_VERSION)
 		return (false);
 
 	/*
 	 * Pass any link-local to link-local traffic, i.e. fe80::/112
 	 * to fe80::/112.
 	 */
-	if (ip6.ip6_src.s6_addr[0] == 0xfe && ip6.ip6_src.s6_addr[1] == 0x80 &&
-	    ip6.ip6_dst.s6_addr[0] == 0xfe && ip6.ip6_dst.s6_addr[1] == 0x80)
+	src = field_ptr(data, struct ip6_hdr, ip6_src.s6_addr[0]);
+	dst = field_ptr(data, struct ip6_hdr, ip6_dst.s6_addr[0]);
+	if (src[0] == 0xfe && src[1] == 0x80 && dst[0] == 0xfe && dst[1] == 0x80)
 		return (true);
 
 	/*
 	 * And anything destined for link-local multicast, i.e. fe?2::/112.
 	 */
-	if (ip6.ip6_dst.s6_addr[0] == 0xfe && (ip6.ip6_dst.s6_addr[1] & 0x0f) == 0x02)
+	if (dst[0] == 0xfe && (dst[1] & 0x0f) == 0x02)
 		return (true);
 
 	/*
@@ -157,7 +161,8 @@ brilter_pass(struct brilter_state *bs, const uint8_t *data, size_t datalen)
 	 * XXX
 	 * What about non-local UDP?
 	 */
-	switch (ip6.ip6_nxt) {
+	nxt = *(const uint8_t *)field_ptr(data, struct ip6_hdr, ip6_nxt);
+	switch (nxt) {
 	case IPPROTO_ICMPV6:
 		return (true);
 	case IPPROTO_TCP:
@@ -165,6 +170,10 @@ brilter_pass(struct brilter_state *bs, const uint8_t *data, size_t datalen)
 	default:
 		return (false);
 	}
+
+	/* Skip IPv6 header.  */
+	data += sizeof (struct ip6_hdr);
+	datalen -= sizeof (struct ip6_hdr);
 
 	/*
 	 * Allow all outbound TCP traffic.
@@ -174,23 +183,22 @@ brilter_pass(struct brilter_state *bs, const uint8_t *data, size_t datalen)
 	if (bs->bs_direction == brilter_outbound)
 		return (true);
 
+	/* Examine TCP header.  */
+	if (datalen < sizeof (struct tcphdr))
+		return (false);
+
 	/*
 	 * Allow anything inbound that isn't a SYN.
 	 */
-	if (datalen < sizeof th)
-		return (false);
-
-	memcpy(&th, data, sizeof th);
-	data += sizeof th;
-	datalen -= sizeof th;
-
-	if ((th.th_flags & (TH_SYN | TH_ACK)) != TH_SYN)
+	flags = *(const uint8_t *)field_ptr(data, struct tcphdr, th_flags);
+	if ((flags & (TH_SYN | TH_ACK)) != TH_SYN)
 		return (true);
 
 	/*
 	 * Allow inbound SYNs to port 22.
 	 */
-	if (ntohs(th.th_dport) == 22)
+	dport = be16dec(field_ptr(data, struct tcphdr, th_dport));
+	if (dport == 22)
 		return (true);
 
 	/*
