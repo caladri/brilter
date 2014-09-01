@@ -32,6 +32,26 @@ static struct processor *brilter_processor(const char *);
 
 static void usage(void);
 
+#define	IP6_LINK_LOCAL_TRAFFIC_P	"(ip6 src net fe80::/112 and ip6 dst net fe80::/112)"
+#define	IP6_MULTICAST_P			"(ip6 multicast)"
+#define	ICMP6_P				"(icmp6)"
+#define	IP6_TCP_P			"(ip6 proto \\tcp)"
+#define	TCP_DST_PORT_P(port)		"(tcp dst port " port ")"
+#define	TCP_SYN_P			"(tcp[tcpflags] & (tcp-syn | tcp-ack) == tcp-syn)"
+
+/*
+ * Allow link-local traffic, multicast and icmp6 in both directions.
+ */
+#define	BASE_FILTER	"(" IP6_LINK_LOCAL_TRAFFIC_P "||" IP6_MULTICAST_P "||" ICMP6_P ")"
+/*
+ * Allow inbound traffic TCP traffic that isn't a SYN unless the destination port is 22.
+ */
+#define	INBOUND_FILTER	"(" BASE_FILTER "||" "(" IP6_TCP_P "&&" "(" "(" "!" TCP_SYN_P ")" "||" "(" TCP_DST_PORT_P("22") ")" ")" ")" ")"
+/*
+ * Allow outbound traffic that is TCP, or that meets the base criteria.
+ */
+#define	OUTBOUND_FILTER	"(" BASE_FILTER "||" IP6_TCP_P ")"
+
 int
 main(int argc, char *argv[])
 {
@@ -45,8 +65,8 @@ main(int argc, char *argv[])
 	int ch;
 	int rv;
 
-	inbound_filter = NULL;
-	outbound_filter = NULL;
+	inbound_filter = INBOUND_FILTER;
+	outbound_filter = OUTBOUND_FILTER;
 	daemonize = false;
 
 	while ((ch = getopt(argc, argv, "I:O:d")) != -1) {
@@ -67,9 +87,6 @@ main(int argc, char *argv[])
 	}
 	argc -= optind;
 	argv += optind;
-
-	if (inbound_filter == NULL || outbound_filter == NULL)
-		usage();
 
 	if (argc != 2)
 		usage();
@@ -186,6 +203,6 @@ brilter_processor(const char *filter)
 static void
 usage(void)
 {
-	fprintf(stderr, "usage: brilter -I inbound-filter -O outbound-filter [-d] lan-interface wan-interface\n");
+	fprintf(stderr, "usage: brilter [-I inbound-filter] [-O outbound-filter] [-d] lan-interface wan-interface\n");
 	exit(1);
 }
