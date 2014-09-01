@@ -12,6 +12,8 @@
 #include <netinet/ip6.h>
 #include <netinet/tcp.h>
 
+#include <pcap/pcap.h>
+
 #include "cdefs.h"
 #include "consumer.h"
 #include "netmap.h"
@@ -19,25 +21,21 @@
 #include "pipe.h"
 #include "processor.h"
 
-enum brilter_direction {
-	brilter_inbound,
-	brilter_outbound,
-};
-
 struct brilter_state {
 	struct processor bs_processor;
-	enum brilter_direction bs_direction;
+	struct bpf_program bs_filter;
 };
 
 static bool brilter_pass(struct brilter_state *, const uint8_t *, size_t);
 static void brilter_process(struct processor *, struct packet *, size_t, struct consumer *);
-static struct processor *brilter_processor(enum brilter_direction);
+static struct processor *brilter_processor(const char *);
 
 static void usage(void);
 
 int
 main(int argc, char *argv[])
 {
+	const char *inbound_filter, *outbound_filter;
 	struct processor *processors[2];
 	struct consumer *consumers[2];
 	struct producer *producers[2];
@@ -47,10 +45,18 @@ main(int argc, char *argv[])
 	int ch;
 	int rv;
 
+	inbound_filter = NULL;
+	outbound_filter = NULL;
 	daemonize = false;
 
-	while ((ch = getopt(argc, argv, "d")) != -1) {
+	while ((ch = getopt(argc, argv, "I:O:d")) != -1) {
 		switch (ch) {
+		case 'I':
+			inbound_filter = optarg;
+			break;
+		case 'O':
+			outbound_filter = optarg;
+			break;
 		case 'd':
 			daemonize = true;
 			break;
@@ -61,6 +67,9 @@ main(int argc, char *argv[])
 	}
 	argc -= optind;
 	argv += optind;
+
+	if (inbound_filter == NULL || outbound_filter == NULL)
+		usage();
 
 	if (argc != 2)
 		usage();
@@ -90,8 +99,8 @@ main(int argc, char *argv[])
 	if (producers[0] == NULL || producers[1] == NULL)
 		errx(1, "unable to open producers");
 
-	processors[0] = brilter_processor(brilter_outbound);
-	processors[1] = brilter_processor(brilter_inbound);
+	processors[0] = brilter_processor(outbound_filter);
+	processors[1] = brilter_processor(inbound_filter);
 
 	printf("Start outbound pipe: %s(LAN)->%s(WAN)\n", lan, wan);
 	pipes[0] = pipe_start(producers[0], processors[0], consumers[1]);
@@ -111,100 +120,24 @@ main(int argc, char *argv[])
 static bool
 brilter_pass(struct brilter_state *bs, const uint8_t *data, size_t datalen)
 {
-	const uint8_t *src, *dst;
-	uint16_t dport, etype;
-	uint8_t nxt, vfc, flags;
+	struct pcap_pkthdr hdr;
+	int rv;
 
-	/* Examine Ethernet header.  */
-	if (datalen < sizeof (struct ether_header))
+	/* NB: hdr.ts is not set because we don't care.  */
+	hdr.caplen = datalen;
+	hdr.len = datalen;
+
+	/*
+	 * Drop packets which don't match the filter.
+	 */
+	rv = pcap_offline_filter(&bs->bs_filter, &hdr, data);
+	if (rv == 0)
 		return (false);
 
 	/*
-	 * We're only interested in passing IPv6 traffic.
+	 * Pass packets which match the filter.
 	 */
-	etype = be16dec(field_ptr(data, struct ether_header, ether_type));
-	if (etype != ETHERTYPE_IPV6)
-		return (false);
-
-	/* Skip Ethernet header.  */
-	data += sizeof (struct ether_header);
-	datalen -= sizeof (struct ether_header);
-
-	/* Examine IPv6 header.  */
-	if (datalen < sizeof (struct ip6_hdr))
-		return (false);
-
-	/*
-	 * Check for correct version.
-	 */
-	vfc = *(const uint8_t *)field_ptr(data, struct ip6_hdr, ip6_vfc);
-	if ((vfc & IPV6_VERSION_MASK) != IPV6_VERSION)
-		return (false);
-
-	/*
-	 * Pass any link-local to link-local traffic, i.e. fe80::/112
-	 * to fe80::/112.
-	 */
-	src = field_ptr(data, struct ip6_hdr, ip6_src.s6_addr[0]);
-	dst = field_ptr(data, struct ip6_hdr, ip6_dst.s6_addr[0]);
-	if (src[0] == 0xfe && src[1] == 0x80 && dst[0] == 0xfe && dst[1] == 0x80)
-		return (true);
-
-	/*
-	 * And anything destined for link-local multicast, i.e. fe?2::/112.
-	 */
-	if (dst[0] == 0xfe && (dst[1] & 0x0f) == 0x02)
-		return (true);
-
-	/*
-	 * Only interested in allowing ICMP6 and maybe TCP6 with the outside world.
-	 * XXX
-	 * What about non-local UDP?
-	 */
-	nxt = *(const uint8_t *)field_ptr(data, struct ip6_hdr, ip6_nxt);
-	switch (nxt) {
-	case IPPROTO_ICMPV6:
-		return (true);
-	case IPPROTO_TCP:
-		break;
-	default:
-		return (false);
-	}
-
-	/* Skip IPv6 header.  */
-	data += sizeof (struct ip6_hdr);
-	datalen -= sizeof (struct ip6_hdr);
-
-	/*
-	 * Allow all outbound TCP traffic.
-	 *
-	 * Note: we can decide this without looking at the TCP header.
-	 */
-	if (bs->bs_direction == brilter_outbound)
-		return (true);
-
-	/* Examine TCP header.  */
-	if (datalen < sizeof (struct tcphdr))
-		return (false);
-
-	/*
-	 * Allow anything inbound that isn't a SYN.
-	 */
-	flags = *(const uint8_t *)field_ptr(data, struct tcphdr, th_flags);
-	if ((flags & (TH_SYN | TH_ACK)) != TH_SYN)
-		return (true);
-
-	/*
-	 * Allow inbound SYNs to port 22.
-	 */
-	dport = be16dec(field_ptr(data, struct tcphdr, th_dport));
-	if (dport == 22)
-		return (true);
-
-	/*
-	 * Deny all other inbound SYNs.
-	 */
-	return (false);
+	return (true);
 }
 
 static void
@@ -227,16 +160,25 @@ brilter_process(struct processor *processor, struct packet *pkts, size_t npkts, 
 }
 
 static struct processor *
-brilter_processor(enum brilter_direction direction)
+brilter_processor(const char *filter)
 {
 	struct brilter_state *bs;
+	pcap_t *pcap;
+	int rv;
 
 	bs = malloc(sizeof *bs);
 	if (bs == NULL)
 		errx(1, "malloc failed");
 
 	bs->bs_processor.p_process = brilter_process;
-	bs->bs_direction = direction;
+
+	pcap = pcap_open_dead(DLT_EN10MB /* XXX */, 2048 /* XXX */);
+	if (pcap == NULL)
+		errx(1, "pcap_open_dead failed");
+	rv = pcap_compile(pcap, &bs->bs_filter, filter, 1, PCAP_NETMASK_UNKNOWN);
+	if (rv == -1)
+		errx(1, "pcap_compile: %s", pcap_geterr(pcap));
+	pcap_close(pcap);
 
 	return (&bs->bs_processor);
 }
@@ -244,6 +186,6 @@ brilter_processor(enum brilter_direction direction)
 static void
 usage(void)
 {
-	fprintf(stderr, "usage: brilter [-d] lan-interface wan-interface\n");
+	fprintf(stderr, "usage: brilter -I inbound-filter -O outbound-filter [-d] lan-interface wan-interface\n");
 	exit(1);
 }

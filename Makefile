@@ -6,6 +6,7 @@ SRCS+=	brilter.c
 SRCS+=	netmap.c
 SRCS+=	pipe.c
 
+LDADD+=	-lpcap
 LDADD+=	-lpthread
 
 DEBUG_FLAGS+=-g
