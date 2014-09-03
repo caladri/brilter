@@ -16,7 +16,7 @@ struct pcap_filter_processor {
 	struct bpf_program pfp_filter;
 };
 
-static bool pcap_filter_pass(struct pcap_filter_processor *, const uint8_t *, size_t);
+static bool pcap_filter_pass(void *, const struct packet *);
 static void pcap_filter_process(struct processor *, struct packet *, size_t, struct consumer *);
 
 struct processor *
@@ -44,19 +44,21 @@ pcap_filter_processor(const char *filter)
 }
 
 static bool
-pcap_filter_pass(struct pcap_filter_processor *pfp, const uint8_t *data, size_t datalen)
+pcap_filter_pass(void *arg, const struct packet *pkt)
 {
+	struct pcap_filter_processor *pfp;
 	struct pcap_pkthdr hdr;
 	int rv;
 
+	pfp = arg;
+
 	/* NB: hdr.ts is not set because we don't care.  */
-	hdr.caplen = datalen;
-	hdr.len = datalen;
+	hdr.caplen = hdr.len = pkt->p_datalen;
 
 	/*
 	 * Drop packets which don't match the filter.
 	 */
-	rv = pcap_offline_filter(&pfp->pfp_filter, &hdr, data);
+	rv = pcap_offline_filter(&pfp->pfp_filter, &hdr, pkt->p_data);
 	if (rv == 0)
 		return (false);
 
@@ -70,17 +72,8 @@ static void
 pcap_filter_process(struct processor *processor, struct packet *pkts, size_t npkts, struct consumer *consumer)
 {
 	struct pcap_filter_processor *pfp;
-	size_t cnpkts, n;
 
 	pfp = container_of(processor, struct pcap_filter_processor, pfp_processor);
 
-	cnpkts = 0;
-	for (n = 0; n < npkts; n++) {
-		if (!pcap_filter_pass(pfp, pkts[n].p_data, pkts[n].p_datalen))
-			continue;
-		pkts[cnpkts++] = pkts[n];
-	}
-
-	if (cnpkts != 0)
-		consumer->c_consume(consumer, pkts, cnpkts);
+	process_predicate(pcap_filter_pass, pfp, pkts, npkts, consumer);
 }
