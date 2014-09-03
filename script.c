@@ -86,9 +86,13 @@ script_execute(const char *path)
 	lua_setglobal(L, "brilter");
 
 	luaL_newmetatable(L, BRILTER_CONSUMER_TYPE);
+	lua_pop(L, 1);
 	luaL_newmetatable(L, BRILTER_PRODUCER_TYPE);
+	lua_pop(L, 1);
 	luaL_newmetatable(L, BRILTER_PROCESSOR_TYPE);
+	lua_pop(L, 1);
 	luaL_newmetatable(L, BRILTER_PIPE_TYPE);
+	lua_pop(L, 1);
 
 	if (luaL_dofile(L, path))
 		errx(1, "lua error: %s\n", lua_tostring(L, -1));
