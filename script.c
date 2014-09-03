@@ -1,11 +1,20 @@
+#include <assert.h>
+#include <err.h>
+#include <stdbool.h>
+#include <stdlib.h>
+#include <stdint.h>
 
 #include <lauxlib.h>
 #include <lua.h>
 #include <lualib.h>
 
+#include "cdefs.h"
+#include "consumer.h"
 #include "netmap.h"
+#include "packet.h"
 #include "pcap_filter.h"
 #include "pipe.h"
+#include "processor.h"
 #include "script.h"
 
 #define	BRILTER_CONSUMER_TYPE	"brilter.consumer"
@@ -38,11 +47,21 @@
 		*u = v;							\
 	} while (0)
 
+struct script_predicate_processor {
+	struct processor spp_processor;
+	lua_State *spp_state;
+	int spp_regkey;
+};
+
 static int script_netmap_consumer(lua_State *);
 static int script_netmap_producer(lua_State *);
 static int script_pcap_filter_processor(lua_State *);
 static int script_pipe_start(lua_State *);
 static int script_pipe_wait(lua_State *);
+static int script_predicate_processor(lua_State *);
+
+static bool script_predicate_pass(void *, const struct packet *);
+static void script_predicate_process(struct processor *, struct packet *, size_t, struct consumer *);
 
 static const luaL_Reg brilter_methods[] = {
 	{ "netmap_consumer",		script_netmap_consumer },
@@ -50,6 +69,7 @@ static const luaL_Reg brilter_methods[] = {
 	{ "pcap_filter_processor",	script_pcap_filter_processor },
 	{ "pipe_start",			script_pipe_start },
 	{ "pipe_wait",			script_pipe_wait },
+	{ "predicate_processor",	script_predicate_processor },
 	{ NULL,				NULL }
 };
 
@@ -69,7 +89,8 @@ script_execute(const char *path)
 	luaL_newmetatable(L, BRILTER_PROCESSOR_TYPE);
 	luaL_newmetatable(L, BRILTER_PIPE_TYPE);
 
-	luaL_dofile(L, path);
+	if (luaL_dofile(L, path))
+		errx(1, "lua error: %s\n", lua_tostring(L, -1));
 }
 
 static int
@@ -153,4 +174,89 @@ script_pipe_wait(lua_State *L)
 
 	pipe_wait(pipe);
 	return (0);
+}
+
+static int
+script_predicate_processor(lua_State *L)
+{
+	struct script_predicate_processor *spp;
+
+	printf("%s\n", __func__);
+
+	luaL_checktype(L, 1, LUA_TFUNCTION);
+
+	spp = malloc(sizeof *spp);
+	if (spp == NULL)
+		return (luaL_error(L, "could not create processor"));
+
+	/*
+	 * XXX
+	 * Create lua threads for each processor.
+	 */
+	spp->spp_processor.p_process = script_predicate_process;
+	spp->spp_state = L;
+	spp->spp_regkey = luaL_ref(L, LUA_REGISTRYINDEX);
+
+	SCRIPT_PUSH_UDATA(&spp->spp_processor, L, BRILTER_PROCESSOR_TYPE);
+	printf("%s exit ok\n", __func__);
+	return (1);
+}
+
+static bool
+script_predicate_pass(void *arg, const struct packet *pkt)
+{
+	lua_State *L;
+	bool pass;
+
+	printf("%s\n", __func__);
+
+	L = arg;
+
+	/* Duplicate the predicate function at the top of the stack.  */
+	printf("%s:%u lua_gettop=%u\n", __func__, __LINE__, lua_gettop(L));
+	lua_pushvalue(L, -1);
+	printf("%s:%u lua_gettop=%u\n", __func__, __LINE__, lua_gettop(L));
+
+	/* Push the packet content as a string.  */
+	lua_pushlstring(L, (const char *)pkt->p_data, pkt->p_datalen);
+	printf("%s:%u lua_gettop=%u\n", __func__, __LINE__, lua_gettop(L));
+
+	/* Call the function with the packet data.  */
+	lua_call(L, 1, 1);
+	printf("%s:%u lua_gettop=%u\n", __func__, __LINE__, lua_gettop(L));
+
+	if (lua_type(L, -1) != LUA_TBOOLEAN) {
+		(void)luaL_error(L, "return type of predicate function not boolean");
+		return (false);
+	}
+
+	printf("%s:%u lua_gettop=%u\n", __func__, __LINE__, lua_gettop(L));
+	pass = lua_toboolean(L, -1);
+
+	/* Pop the boolean from the stack.  */
+	lua_pop(L, 1);
+
+	printf("%s ret %d\n", __func__, (int)pass);
+
+	return (pass);
+}
+
+static void
+script_predicate_process(struct processor *processor, struct packet *pkts, size_t npkts, struct consumer *consumer)
+{
+	struct script_predicate_processor *spp;
+	lua_State *L;
+
+	printf("%s\n", __func__);
+
+	spp = container_of(processor, struct script_predicate_processor, spp_processor);
+	L = spp->spp_state;
+
+	/* Place the predicate function at the top of the stack.  */
+	lua_rawgeti(L, LUA_REGISTRYINDEX, spp->spp_regkey);
+
+	process_predicate(script_predicate_pass, L, pkts, npkts, consumer);
+
+	/* Pop the predicate function from the top of the stack.  */
+	lua_pop(L, 1);
 }
