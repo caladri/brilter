@@ -17,6 +17,8 @@ The version currently checked in uses `pcap-filter(7)` for filtering decisions, 
 
 > ```brilter [-d] lan-interface wan-interface```
 
+XXX This needs updated for the new Lua setup.
+
 That is, `brilter` can be run as a daemon or not, by specifying the `-d` flag.  It needs two interfaces that it can use through `netmap(4)` (whether physical interfaces, VALE switches, pipes, etc.), one of which has LAN connectivity and one of which has WAN/DMZ connectivity.
 
 While `brilter` is running, it will selectively bridge packets between `lan-interface` and `wan-interface`.  It allows link-local traffic and multicast traffic to pass unimpeded in both directions, so DHCPv6 and other local services should work as expected.
