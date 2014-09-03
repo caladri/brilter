@@ -45,6 +45,8 @@ static void usage(void);
 #define	BASE_FILTER	"(" IP6_LINK_LOCAL_TRAFFIC_P "||" IP6_MULTICAST_P "||" ICMP6_P ")"
 /*
  * Allow inbound traffic TCP traffic that isn't a SYN unless the destination port is 22.
+ *
+ * XXX This doesn't properly filter incoming SYNs because pcap-filter fails to handle TCP fields within IPv6.
  */
 #define	INBOUND_FILTER	"(" BASE_FILTER "||" "(" IP6_TCP_P "&&" "(" "(" "!" TCP_SYN_P ")" "||" "(" TCP_DST_PORT_P("22") ")" ")" ")" ")"
 /*
