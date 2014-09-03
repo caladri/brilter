@@ -34,7 +34,7 @@ main(int argc, char *argv[])
 		usage();
 
 	if (daemonize) {
-		rv = daemon(0, 0);
+		rv = daemon(1, 0);
 		if (rv == -1)
 			err(1, "daemon");
 	}
