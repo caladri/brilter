@@ -1,3 +1,4 @@
+#include <sys/endian.h>
 #include <assert.h>
 #include <err.h>
 #include <stdbool.h>
@@ -21,6 +22,7 @@
 #define	BRILTER_PRODUCER_TYPE	"brilter.producer"
 #define	BRILTER_PROCESSOR_TYPE	"brilter.processor"
 #define	BRILTER_PIPE_TYPE	"brilter.type"
+#define	BRILTER_PACKET_TYPE	"brilter.packet"
 
 #define	SCRIPT_GET_UDATA(v, l, p, n)					\
 	do {								\
@@ -35,7 +37,7 @@
 
 #define	SCRIPT_PUSH_UDATA(v, l, n)					\
 	do {								\
-		void **u;						\
+		const void **u;						\
 									\
 		u = lua_newuserdata(l, sizeof *u);			\
 		if (u == NULL)						\
@@ -61,6 +63,15 @@ static int script_pipe_start(lua_State *);
 static int script_pipe_wait(lua_State *);
 static int script_predicate_processor(lua_State *);
 
+static int script_packet_length(lua_State *);
+static int script_packet_read8(lua_State *);
+static int script_packet_read16be(lua_State *);
+static int script_packet_read16le(lua_State *);
+static int script_packet_read32be(lua_State *);
+static int script_packet_read32le(lua_State *);
+static int script_packet_read64be(lua_State *);
+static int script_packet_read64le(lua_State *);
+
 static bool script_predicate_pass(void *, const struct packet *);
 static void script_predicate_process(struct processor *, struct packet *, size_t, struct consumer *);
 
@@ -71,6 +82,18 @@ static const luaL_Reg brilter_methods[] = {
 	{ "pipe_start",			script_pipe_start },
 	{ "pipe_wait",			script_pipe_wait },
 	{ "predicate_processor",	script_predicate_processor },
+	{ NULL,				NULL }
+};
+
+static const luaL_Reg brilter_packet_methods[] = {
+	{ "length",			script_packet_length },
+	{ "read8",			script_packet_read8 },
+	{ "read16be",			script_packet_read16be },
+	{ "read16le",			script_packet_read16le },
+	{ "read32be",			script_packet_read32be },
+	{ "read32le",			script_packet_read32le },
+	{ "read64be",			script_packet_read64be },
+	{ "read64le",			script_packet_read64le },
 	{ NULL,				NULL }
 };
 
@@ -92,6 +115,11 @@ script_execute(const char *path)
 	luaL_newmetatable(L, BRILTER_PROCESSOR_TYPE);
 	lua_pop(L, 1);
 	luaL_newmetatable(L, BRILTER_PIPE_TYPE);
+	lua_pop(L, 1);
+	luaL_newmetatable(L, BRILTER_PACKET_TYPE);
+	lua_pushvalue(L, -1);
+	lua_setfield(L, -2, "__index");
+	luaL_setfuncs(L, brilter_packet_methods, 0);
 	lua_pop(L, 1);
 
 	if (luaL_dofile(L, path))
@@ -219,10 +247,10 @@ script_predicate_pass(void *arg, const struct packet *pkt)
 	/* Duplicate the predicate function at the top of the stack.  */
 	lua_pushvalue(L, -1);
 
-	/* Push the packet content as a string.  */
-	lua_pushlstring(L, (const char *)pkt->p_data, pkt->p_datalen);
+	/* Push the packet.  */
+	SCRIPT_PUSH_UDATA(pkt, L, BRILTER_PACKET_TYPE);
 
-	/* Call the function with the packet data.  */
+	/* Call the function with the packet.  */
 	lua_call(L, 1, 1);
 
 	if (lua_type(L, -1) != LUA_TBOOLEAN) {
@@ -255,3 +283,41 @@ script_predicate_process(struct processor *processor, struct packet *pkts, size_
 	/* Pop the predicate function from the top of the stack.  */
 	lua_pop(L, 1);
 }
+
+#define	SCRIPT_PACKET_READ(name, bytes, fetch)				\
+static int								\
+name(lua_State *L)							\
+{									\
+	const struct packet *pkt;					\
+	size_t offset;							\
+									\
+	SCRIPT_GET_UDATA(pkt, L, 1, BRILTER_PACKET_TYPE);		\
+	offset = (size_t)luaL_checkinteger(L, 2);			\
+									\
+	if (offset > pkt->p_datalen - (bytes))				\
+		return (luaL_error(L, "read offset excessive"));	\
+									\
+	lua_pushinteger(L, (lua_Integer)fetch(&pkt->p_data[offset]));	\
+	return (1);							\
+}									\
+struct __hack
+
+static int
+script_packet_length(lua_State *L)
+{
+	const struct packet *pkt;
+
+	SCRIPT_GET_UDATA(pkt, L, 1, BRILTER_PACKET_TYPE);
+
+	lua_pushinteger(L, (lua_Integer)pkt->p_datalen);
+	return (1);
+
+}
+
+SCRIPT_PACKET_READ(script_packet_read8, 1, *);
+SCRIPT_PACKET_READ(script_packet_read16be, 2, be16dec);
+SCRIPT_PACKET_READ(script_packet_read16le, 2, le16dec);
+SCRIPT_PACKET_READ(script_packet_read32be, 4, be32dec);
+SCRIPT_PACKET_READ(script_packet_read32le, 4, le32dec);
+SCRIPT_PACKET_READ(script_packet_read64be, 8, be64dec);
+SCRIPT_PACKET_READ(script_packet_read64le, 8, le64dec);
